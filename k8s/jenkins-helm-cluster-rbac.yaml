@@ -1,11 +1,10 @@
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
-  name: jenkins-helm-role
-  namespace: jenkins
+  name: jenkins-helm-cluster-role
 rules:
   - apiGroups: [""]
-    resources: ["secrets", "configmaps", "services", "pods", "serviceaccounts"]
+    resources: ["namespaces", "secrets", "configmaps", "services", "pods", "serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apps"]
     resources: ["deployments", "replicasets"]
@@ -18,15 +17,14 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
-  name: jenkins-helm-rolebinding
-  namespace: jenkins
+  name: jenkins-helm-cluster-rolebinding
 subjects:
   - kind: ServiceAccount
     name: jenkins
     namespace: jenkins
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: jenkins-helm-role
+  kind: ClusterRole
+  name: jenkins-helm-cluster-role
