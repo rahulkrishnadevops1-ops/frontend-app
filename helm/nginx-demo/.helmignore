@@ -1,0 +1,11 @@
+# Source control
+.git/
+.gitignore
+
+# IDE files
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
