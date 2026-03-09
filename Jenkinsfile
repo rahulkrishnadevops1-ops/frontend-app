@@ -2,7 +2,6 @@ pipeline {
   agent none
 
   options {
-    skipDefaultCheckout()
     disableConcurrentBuilds()
     buildDiscarder(logRotator(numToKeepStr: '20'))
   }
@@ -19,10 +18,6 @@ pipeline {
   environment {
     REGISTRY_CREDENTIALS_ID = 'dockerhub-creds'
     EFFECTIVE_TAG = ''
-    IMAGE_REPOSITORY = ''
-    RELEASE_NAME = ''
-    K8S_NAMESPACE = ''
-    HELM_CHART_PATH = ''
   }
 
   stages {
@@ -32,11 +27,8 @@ pipeline {
         git branch: "${params.BRANCH}", url: 'https://github.com/Narendra-Geddam/nginx-demo.git'
         script {
           env.EFFECTIVE_TAG = params.IMAGE_TAG?.trim() ? params.IMAGE_TAG.trim() : env.BUILD_NUMBER
-          env.IMAGE_REPOSITORY = params.IMAGE_REPOSITORY?.trim()
-          env.RELEASE_NAME = params.RELEASE_NAME?.trim()
-          env.K8S_NAMESPACE = params.K8S_NAMESPACE?.trim()
-          env.HELM_CHART_PATH = params.HELM_CHART_PATH?.trim()
         }
+        stash name: 'source', includes: '**/*'
       }
     }
 
@@ -61,29 +53,41 @@ spec:
         }
       }
       steps {
+        unstash 'source'
         container('kaniko') {
           withCredentials([usernamePassword(credentialsId: env.REGISTRY_CREDENTIALS_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
-            sh '''
-              REGISTRY_HOST=$(echo "${IMAGE_REPOSITORY}" | cut -d/ -f1)
-              if ! echo "$REGISTRY_HOST" | grep -Eq '[.:]|localhost'; then
-                REGISTRY_HOST='https://index.docker.io/v1/'
-              fi
-              mkdir -p /kaniko/.docker
-              AUTH=$(printf "%s:%s" "$REG_USER" "$REG_PASS" | base64 | tr -d '\n')
-              cat > /kaniko/.docker/config.json <<EOF
-              {
-                "auths": {
-                  "$REGISTRY_HOST": { "auth": "$AUTH" }
-                }
+            script {
+              def imageRepo = params.IMAGE_REPOSITORY?.trim()
+              if (!imageRepo) {
+                error("IMAGE_REPOSITORY parameter is empty. Set it like '<dockerhub-user>/nginx-demo'.")
               }
+              withEnv([
+                "IMAGE_REPOSITORY=${imageRepo}",
+                "EFFECTIVE_TAG=${env.EFFECTIVE_TAG}"
+              ]) {
+                sh '''
+                  REGISTRY_HOST=$(echo "${IMAGE_REPOSITORY}" | cut -d/ -f1)
+                  if ! echo "$REGISTRY_HOST" | grep -Eq '[.:]|localhost'; then
+                    REGISTRY_HOST='https://index.docker.io/v1/'
+                  fi
+                  mkdir -p /kaniko/.docker
+                  AUTH=$(printf "%s:%s" "$REG_USER" "$REG_PASS" | base64 | tr -d '\n')
+                  cat > /kaniko/.docker/config.json <<EOF
+                  {
+                    "auths": {
+                      "$REGISTRY_HOST": { "auth": "$AUTH" }
+                    }
+                  }
 EOF
 
-              /kaniko/executor \
-                --context "$PWD" \
-                --dockerfile "$PWD/Dockerfile" \
-                --destination "${IMAGE_REPOSITORY}:${EFFECTIVE_TAG}" \
-                --destination "${IMAGE_REPOSITORY}:latest"
-            '''
+                  /kaniko/executor \
+                    --context "$PWD" \
+                    --dockerfile "$PWD/Dockerfile" \
+                    --destination "${IMAGE_REPOSITORY}:${EFFECTIVE_TAG}" \
+                    --destination "${IMAGE_REPOSITORY}:latest"
+                '''
+              }
+            }
           }
         }
       }
@@ -112,17 +116,32 @@ spec:
         }
       }
       steps {
+        unstash 'source'
         container('helm') {
-          sh '''
-            helm lint "${HELM_CHART_PATH}"
-            helm upgrade --install "${RELEASE_NAME}" "${HELM_CHART_PATH}" \
-              --namespace "${K8S_NAMESPACE}" \
-              --create-namespace \
-              --wait --timeout 5m \
-              --set image.repository="${IMAGE_REPOSITORY}" \
-              --set image.tag="${EFFECTIVE_TAG}" \
-              --set image.pullPolicy="Always"
-          '''
+          script {
+            def imageRepo = params.IMAGE_REPOSITORY?.trim()
+            def releaseName = params.RELEASE_NAME?.trim()
+            def namespace = params.K8S_NAMESPACE?.trim()
+            def chartPath = params.HELM_CHART_PATH?.trim()
+            withEnv([
+              "IMAGE_REPOSITORY=${imageRepo}",
+              "RELEASE_NAME=${releaseName}",
+              "K8S_NAMESPACE=${namespace}",
+              "HELM_CHART_PATH=${chartPath}",
+              "EFFECTIVE_TAG=${env.EFFECTIVE_TAG}"
+            ]) {
+              sh '''
+                helm lint "${HELM_CHART_PATH}"
+                helm upgrade --install "${RELEASE_NAME}" "${HELM_CHART_PATH}" \
+                  --namespace "${K8S_NAMESPACE}" \
+                  --create-namespace \
+                  --wait --timeout 5m \
+                  --set image.repository="${IMAGE_REPOSITORY}" \
+                  --set image.tag="${EFFECTIVE_TAG}" \
+                  --set image.pullPolicy="Always"
+              '''
+            }
+          }
         }
       }
     }
@@ -130,9 +149,16 @@ spec:
     stage('Post-Deploy Verify') {
       agent any
       steps {
-        sh '''
-          kubectl get deploy,po,svc,ingress -n "${K8S_NAMESPACE}" -l app.kubernetes.io/instance="${RELEASE_NAME}"
-        '''
+        script {
+          withEnv([
+            "RELEASE_NAME=${params.RELEASE_NAME?.trim()}",
+            "K8S_NAMESPACE=${params.K8S_NAMESPACE?.trim()}"
+          ]) {
+            sh '''
+              kubectl get deploy,po,svc,ingress -n "${K8S_NAMESPACE}" -l app.kubernetes.io/instance="${RELEASE_NAME}"
+            '''
+          }
+        }
       }
     }
   }
