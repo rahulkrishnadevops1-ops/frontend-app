@@ -12,6 +12,8 @@ pipeline {
 
   environment {
     REGISTRY_CREDENTIALS_ID = 'dockerhub-creds'
+    FINAL_IMAGE_REPOSITORY = ''
+    FINAL_IMAGE_TAG = ''
   }
 
   stages {
@@ -37,7 +39,14 @@ spec:
           withCredentials([usernamePassword(credentialsId: env.REGISTRY_CREDENTIALS_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
             script {
               def tag = params.IMAGE_TAG?.trim() ? params.IMAGE_TAG.trim() : env.BUILD_NUMBER
-              withEnv(["IMAGE_REPOSITORY=${params.IMAGE_REPOSITORY}", "IMAGE_TAG=${tag}"]) {
+              def imageRepo = params.IMAGE_REPOSITORY?.trim()
+              if (imageRepo && imageRepo.contains('/') && !imageRepo.contains('.') && !imageRepo.contains(':')) {
+                def repoName = imageRepo.split('/', 2)[1]
+                imageRepo = "${REG_USER}/${repoName}"
+              }
+              env.FINAL_IMAGE_REPOSITORY = imageRepo
+              env.FINAL_IMAGE_TAG = tag
+              withEnv(["IMAGE_REPOSITORY=${imageRepo}", "IMAGE_TAG=${tag}"]) {
                 sh '''
                   mkdir -p /kaniko/.docker
                   AUTH=$(printf "%s:%s" "$REG_USER" "$REG_PASS" | base64 | tr -d '\n')
@@ -77,8 +86,9 @@ spec:
         git branch: "${params.BRANCH}", url: 'https://github.com/Narendra-Geddam/nginx-demo.git'
         container('helm') {
           script {
-            def tag = params.IMAGE_TAG?.trim() ? params.IMAGE_TAG.trim() : env.BUILD_NUMBER
-            withEnv(["IMAGE_REPOSITORY=${params.IMAGE_REPOSITORY}", "IMAGE_TAG=${tag}"]) {
+            def imageRepo = env.FINAL_IMAGE_REPOSITORY?.trim() ? env.FINAL_IMAGE_REPOSITORY : params.IMAGE_REPOSITORY
+            def tag = env.FINAL_IMAGE_TAG?.trim() ? env.FINAL_IMAGE_TAG : (params.IMAGE_TAG?.trim() ? params.IMAGE_TAG.trim() : env.BUILD_NUMBER)
+            withEnv(["IMAGE_REPOSITORY=${imageRepo}", "IMAGE_TAG=${tag}"]) {
               sh '''
                 helm upgrade --install "${RELEASE_NAME}" "${HELM_CHART_PATH}" \
                   --namespace "${K8S_NAMESPACE}" \
