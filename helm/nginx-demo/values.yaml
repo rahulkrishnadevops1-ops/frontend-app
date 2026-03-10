@@ -22,6 +22,7 @@ securityContext:
   allowPrivilegeEscalation: false
   runAsNonRoot: true
   runAsUser: 101
+  runAsGroup: 101
   readOnlyRootFilesystem: false
   capabilities:
     drop:
@@ -30,7 +31,7 @@ securityContext:
 service:
   type: ClusterIP
   port: 80
-  targetPort: 80
+  targetPort: 8080
 
 ingress:
   enabled: true
