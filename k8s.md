@@ -12,7 +12,20 @@ This project does:
 1. Build Docker image in Kubernetes using Kaniko.
 2. Push image to Docker Hub.
 3. Deploy/upgrade app to Kubernetes using Helm.
-4. Expose app through NGINX Ingress Controller (controller Service type `NodePort`).
+4. Expose app through Service `NodePort` (default in iximiuz labs).
+
+---
+
+## Lab Note (New Addition - March 10, 2026)
+
+In iximiuz labs, Ingress worked with `curl -H "Host: ..."` but browser access was inconsistent unless local host mapping and host-header routing were correct.
+
+For this lab, default exposure is kept simple:
+1. Disable app Ingress.
+2. Use app Service type `NodePort`.
+3. Access app directly with `http://<NODE_IP>:30081`.
+
+Ingress instructions are kept below as optional reference.
 
 ---
 
@@ -85,7 +98,7 @@ kubectl get svc -n jenkins
 
 ---
 
-## 2) Install NGINX Ingress Controller as NodePort
+## 2) (Optional) Install NGINX Ingress Controller as NodePort
 
 If you get `repo ingress-nginx not found`, add repo first.
 
@@ -99,7 +112,7 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --set controller.service.type=NodePort
 ```
 
-Verify controller:
+Verify controller (optional path):
 
 ```bash
 kubectl get pods -n ingress-nginx
@@ -172,10 +185,10 @@ Expected output: `yes`
 3. Runs:
    - `helm upgrade --install ... --namespace dev ...`
 4. Uses your chart in `helm/nginx-demo`.
-5. Chart defaults expose app via Ingress:
-   - app Service type: `ClusterIP`
-   - `ingress.enabled: true`
-   - `ingress.className: nginx`
+5. Chart defaults expose app via Service NodePort:
+   - `service.type: NodePort`
+   - `service.nodePort: 30081`
+   - `ingress.enabled: false`
 
 ---
 
@@ -185,8 +198,6 @@ After a successful pipeline:
 
 ```bash
 kubectl get deploy,po,svc -n dev
-kubectl get ingress -n dev
-kubectl get svc -n ingress-nginx
 helm list -n dev
 kubectl describe deployment nginx-demo -n dev
 ```
@@ -197,18 +208,11 @@ Check image actually updated:
 kubectl get deployment nginx-demo -n dev -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
 ```
 
-Test ingress path using controller NodePort:
+Test app directly using Service NodePort:
 
 ```bash
-HTTP_NODE_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[0].nodePort}')
 NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
-curl -H "Host: nginx-demo.local" "http://${NODE_IP}:${HTTP_NODE_PORT}/"
-```
-
-If using browser, map host locally:
-
-```bash
-echo "<NODE_IP> nginx-demo.local" | sudo tee -a /etc/hosts
+curl "http://${NODE_IP}:30081/"
 ```
 
 ---
@@ -222,6 +226,16 @@ Fix:
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
 helm repo update
 ```
+
+### Ingress NodePort returns `404` in browser (iximiuz labs)
+Cause: Ingress host-based rule requires matching `Host` header (for example `nginx-demo.local`).  
+Fix options:
+1. Preferred for this lab: use app Service `NodePort` directly (`http://<NODE_IP>:30081`).
+2. If using ingress, test with:
+```bash
+curl -H "Host: nginx-demo.local" "http://<NODE_IP>:<INGRESS_NODEPORT>/"
+```
+3. Add local hosts mapping for browser-based ingress testing.
 
 ### `secrets is forbidden`
 Cause: Jenkins SA missing RBAC in target namespace.  
@@ -301,15 +315,14 @@ EOF
 
 1. `dockerhub-creds` exists in Jenkins.
 2. `jenkins` service account exists in `jenkins` namespace.
-3. Ingress controller installed in `ingress-nginx` with Service type `NodePort`.
-4. Cluster RBAC applied.
-5. Build with parameters:
+3. Cluster RBAC applied.
+4. Build with parameters:
    - `IMAGE_REPOSITORY=yourdockeruser/nginx-demo`
    - `K8S_NAMESPACE=dev`
-6. Confirm release:
+5. Confirm release:
    - `helm list -n dev`
    - `kubectl get all -n dev`
-   - `kubectl get ingress -n dev`
+   - `kubectl get svc -n dev` (expect `NodePort` on `30081`)
 
 ---
 
