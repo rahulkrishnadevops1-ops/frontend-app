@@ -12,6 +12,7 @@ This project does:
 1. Build Docker image in Kubernetes using Kaniko.
 2. Push image to Docker Hub.
 3. Deploy/upgrade app to Kubernetes using Helm.
+4. Expose app through NGINX Ingress Controller (controller Service type `NodePort`).
 
 ---
 
@@ -84,7 +85,30 @@ kubectl get svc -n jenkins
 
 ---
 
-## 2) Jenkins ServiceAccount + Cluster RBAC
+## 2) Install NGINX Ingress Controller as NodePort
+
+If you get `repo ingress-nginx not found`, add repo first.
+
+```bash
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+
+helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+  -n ingress-nginx \
+  --create-namespace \
+  --set controller.service.type=NodePort
+```
+
+Verify controller:
+
+```bash
+kubectl get pods -n ingress-nginx
+kubectl get svc -n ingress-nginx
+```
+
+---
+
+## 3) Jenkins ServiceAccount + Cluster RBAC
 
 Apply the service account:
 
@@ -108,7 +132,7 @@ Expected output: `yes`
 
 ---
 
-## 3) Jenkins Job Setup
+## 4) Jenkins Job Setup
 
 1. Create a Pipeline job.
 2. Set Pipeline definition: `Pipeline script from SCM`.
@@ -119,7 +143,7 @@ Expected output: `yes`
 
 ---
 
-## 4) Pipeline Parameters (Current Jenkinsfile)
+## 5) Pipeline Parameters (Current Jenkinsfile)
 
 | Parameter | Default | Example |
 |---|---|---|
@@ -132,7 +156,7 @@ Expected output: `yes`
 
 ---
 
-## 5) How Current Jenkinsfile Works
+## 6) How Current Jenkinsfile Works
 
 ### Stage 1: Build & Push
 1. Creates a Kubernetes agent pod with Kaniko container.
@@ -148,16 +172,21 @@ Expected output: `yes`
 3. Runs:
    - `helm upgrade --install ... --namespace dev ...`
 4. Uses your chart in `helm/nginx-demo`.
+5. Chart defaults expose app via Ingress:
+   - app Service type: `ClusterIP`
+   - `ingress.enabled: true`
+   - `ingress.className: nginx`
 
 ---
 
-## 6) Manual Validation Commands
+## 7) Manual Validation Commands
 
 After a successful pipeline:
 
 ```bash
 kubectl get deploy,po,svc -n dev
 kubectl get ingress -n dev
+kubectl get svc -n ingress-nginx
 helm list -n dev
 kubectl describe deployment nginx-demo -n dev
 ```
@@ -168,9 +197,31 @@ Check image actually updated:
 kubectl get deployment nginx-demo -n dev -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
 ```
 
+Test ingress path using controller NodePort:
+
+```bash
+HTTP_NODE_PORT=$(kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.spec.ports[0].nodePort}')
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
+curl -H "Host: nginx-demo.local" "http://${NODE_IP}:${HTTP_NODE_PORT}/"
+```
+
+If using browser, map host locally:
+
+```bash
+echo "<NODE_IP> nginx-demo.local" | sudo tee -a /etc/hosts
+```
+
 ---
 
-## 7) Troubleshooting (Real Issues You Hit)
+## 8) Troubleshooting (Real Issues You Hit)
+
+### `repo ingress-nginx not found`
+Cause: Ingress repo not added in Helm.  
+Fix:
+```bash
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+```
 
 ### `secrets is forbidden`
 Cause: Jenkins SA missing RBAC in target namespace.  
@@ -190,7 +241,7 @@ Fix: Removed `--wait --timeout` for now.
 
 ---
 
-## 8) Production Notes (Next Level)
+## 9) Production Notes (Next Level)
 
 Current pipeline is intentionally minimal and stable.  
 For production hardening, add later:
@@ -207,7 +258,7 @@ For production hardening, add later:
 
 ---
 
-## 9) One-Command RBAC (Heredoc)
+## 10) One-Command RBAC (Heredoc)
 
 ```bash
 cat <<'EOF' | kubectl apply -f -
@@ -246,17 +297,19 @@ EOF
 
 ---
 
-## 10) Quick Run Checklist
+## 11) Quick Run Checklist
 
 1. `dockerhub-creds` exists in Jenkins.
 2. `jenkins` service account exists in `jenkins` namespace.
-3. Cluster RBAC applied.
-4. Build with parameters:
+3. Ingress controller installed in `ingress-nginx` with Service type `NodePort`.
+4. Cluster RBAC applied.
+5. Build with parameters:
    - `IMAGE_REPOSITORY=yourdockeruser/nginx-demo`
    - `K8S_NAMESPACE=dev`
-5. Confirm release:
+6. Confirm release:
    - `helm list -n dev`
    - `kubectl get all -n dev`
+   - `kubectl get ingress -n dev`
 
 ---
 
