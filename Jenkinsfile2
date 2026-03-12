@@ -16,7 +16,7 @@ pipeline {
   environment {
     KUBECONFIG_CREDENTIALS_ID = 'minikube-kubeconfig'
     DOCKER_CREDENTIALS_ID = 'dockerhub-creds'
-    IMAGE_REPOSITORY = 'privatergistry/nginx-demo'
+    IMAGE_REPOSITORY = 'rahulkrishnadevops/nginx-demo'
     HELM_CHART_PATH = 'helm/nginx-demo'
     VALUES_FILE = 'helm/nginx-demo/values.yaml'
   }
