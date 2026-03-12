@@ -2,6 +2,13 @@
 
 Kubernetes + Jenkins lab project.
 
+## Prerequisites
+
+- Jenkins controller with `docker`, `kubectl`, and `helm` installed
+- Jenkins credential `dockerhub-creds` (type: `Username with password`)
+- Jenkins credential `minikube-kubeconfig` (type: `Secret file`)
+- Reachable Kubernetes API endpoint from Jenkins using the kubeconfig above
+
 ## What this repo does
 
 1. Builds a container image on Jenkins controller (`built-in`) using Docker.

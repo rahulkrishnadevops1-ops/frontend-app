@@ -2,19 +2,23 @@ pipeline {
   agent { label 'built-in' }
 
   options {
+    disableConcurrentBuilds()
     skipDefaultCheckout(true)
     timestamps()
   }
 
   parameters {
-    string(name: 'KUBECONFIG_CREDENTIALS_ID', defaultValue: 'minikube-kubeconfig', description: 'Jenkins Secret file credential ID that contains kubeconfig')
-    string(name: 'DOCKER_CREDENTIALS_ID', defaultValue: 'dockerhub-creds', description: 'Jenkins username/password credentials ID for Docker Hub')
-    string(name: 'IMAGE_REPOSITORY', defaultValue: 'privatergistry/nginx-demo', description: 'Docker image repository')
     string(name: 'IMAGE_TAG', defaultValue: '', description: 'Docker image tag (leave empty to use BUILD_NUMBER)')
     string(name: 'RELEASE_NAME', defaultValue: 'nginx-demo', description: 'Helm release name')
     string(name: 'K8S_NAMESPACE', defaultValue: 'dev', description: 'Kubernetes namespace')
-    string(name: 'HELM_CHART_PATH', defaultValue: 'helm/nginx-demo', description: 'Path to Helm chart in repo')
-    string(name: 'VALUES_FILE', defaultValue: 'helm/nginx-demo/values.yaml', description: 'Helm values file path')
+  }
+
+  environment {
+    KUBECONFIG_CREDENTIALS_ID = 'minikube-kubeconfig'
+    DOCKER_CREDENTIALS_ID = 'dockerhub-creds'
+    IMAGE_REPOSITORY = 'privatergistry/nginx-demo'
+    HELM_CHART_PATH = 'helm/nginx-demo'
+    VALUES_FILE = 'helm/nginx-demo/values.yaml'
   }
 
   stages {
@@ -24,34 +28,19 @@ pipeline {
       }
     }
 
-    stage('Validate Tools') {
-      steps {
-        sh '''
-          set -e
-          kubectl version --client
-          helm version
-          docker --version
-          if command -v minikube >/dev/null 2>&1; then
-            minikube status || true
-          fi
-        '''
-      }
-    }
-
     stage('Build & Push Image') {
       steps {
-        withCredentials([usernamePassword(credentialsId: params.DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKERHUB_USERNAME', passwordVariable: 'DOCKERHUB_PASSWORD')]) {
+        withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKERHUB_USERNAME', passwordVariable: 'DOCKERHUB_PASSWORD')]) {
           script {
             env.RESOLVED_IMAGE_TAG = params.IMAGE_TAG?.trim() ? params.IMAGE_TAG.trim() : env.BUILD_NUMBER
-            env.RESOLVED_IMAGE_REPOSITORY = params.IMAGE_REPOSITORY?.trim() ? params.IMAGE_REPOSITORY.trim() : "${env.DOCKERHUB_USERNAME}/nginx-demo"
           }
           sh '''
-            set -e
-            echo "Using image: ${RESOLVED_IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}"
+            set -eu
+            echo "Using image: ${IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}"
 
             echo "${DOCKERHUB_PASSWORD}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
-            docker build -t "${RESOLVED_IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}" .
-            docker push "${RESOLVED_IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}"
+            docker build -t "${IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}" .
+            docker push "${IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}"
             docker logout || true
           '''
         }
@@ -60,27 +49,22 @@ pipeline {
 
     stage('Deploy To Minikube') {
       steps {
-        withCredentials([file(credentialsId: params.KUBECONFIG_CREDENTIALS_ID, variable: 'KCFG')]) {
+        withCredentials([file(credentialsId: env.KUBECONFIG_CREDENTIALS_ID, variable: 'KCFG')]) {
           sh '''
-            set -e
+            set -eu
             export KUBECONFIG="$KCFG"
-            echo "Deploying image: ${RESOLVED_IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}"
-
-            kubectl cluster-info
-            kubectl get nodes
-
-            kubectl get namespace "${K8S_NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${K8S_NAMESPACE}"
+            echo "Deploying image: ${IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}"
 
             helm upgrade --install "${RELEASE_NAME}" "${HELM_CHART_PATH}" \
               --namespace "${K8S_NAMESPACE}" \
               --create-namespace \
+              --wait \
+              --atomic \
+              --timeout 5m \
               -f "${VALUES_FILE}" \
-              --set image.repository="${RESOLVED_IMAGE_REPOSITORY}" \
+              --set image.repository="${IMAGE_REPOSITORY}" \
               --set image.tag="${RESOLVED_IMAGE_TAG}" \
               --set image.pullPolicy="IfNotPresent"
-
-            kubectl get pods -n "${K8S_NAMESPACE}" -o wide
-            kubectl get svc -n "${K8S_NAMESPACE}"
           '''
         }
       }
