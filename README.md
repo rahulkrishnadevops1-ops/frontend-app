@@ -22,6 +22,7 @@ Kubernetes + Jenkins lab project.
 
 - `Jenkinsfile`: legacy pipeline
 - `Jenkinsfile2`: current pipeline (build/push/deploy on controller)
+- `Jenkinsfile2.md`: dedicated docs for Jenkinsfile2 pipeline
 - `Dockerfile`: app image
 - `helm/nginx-demo`: Helm chart
 - `k8s/jenkins-serviceaccount.yaml`: Jenkins service account

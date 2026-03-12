@@ -142,6 +142,9 @@ Required Jenkins credentials:
 - `dockerhub-creds` of type `Username with password`
 - `minikube-kubeconfig` of type `Secret file`
 
+Detailed pipeline reference:
+- `Jenkinsfile2.md`
+
 ---
 
 ## 5) Current App Exposure
