@@ -2,7 +2,7 @@
 
 Minimal lab setup (cleaned):
 1. Jenkins runs in Kubernetes.
-2. Kaniko builds and pushes image.
+2. Jenkins controller builds and pushes image to Docker Hub.
 3. Helm deploys app.
 4. App is exposed with Service `NodePort` on port `30081`.
 
@@ -15,6 +15,7 @@ Minimal lab setup (cleaned):
 ├── Dockerfile
 ├── index.html
 ├── Jenkinsfile
+├── Jenkinsfile2
 ├── helm/nginx-demo/
 │   ├── Chart.yaml
 │   ├── values.yaml
@@ -126,12 +127,23 @@ Expected: `yes`
 
 ## 4) Jenkins Pipeline Parameters
 
-- `BRANCH` (default: `main`)
+- `KUBECONFIG_CREDENTIALS_ID` (default: `minikube-kubeconfig`)
+- `DOCKER_CREDENTIALS_ID` (default: `dockerhub-creds`)
 - `IMAGE_REPOSITORY` (default: `privatergistry/nginx-demo`)
 - `IMAGE_TAG` (empty = `BUILD_NUMBER`)
 - `RELEASE_NAME` (default: `nginx-demo`)
 - `K8S_NAMESPACE` (default: `dev`)
 - `HELM_CHART_PATH` (default: `helm/nginx-demo`)
+- `VALUES_FILE` (default: `helm/nginx-demo/values.yaml`)
+
+Jenkinsfile used for this flow: `Jenkinsfile2`
+
+Required Jenkins credentials:
+- `dockerhub-creds` of type `Username with password`
+- `minikube-kubeconfig` of type `Secret file`
+
+Detailed pipeline reference:
+- `Jenkinsfile2.md`
 
 ---
 
@@ -173,6 +185,10 @@ Use the current Dockerfile base image:
 Re-apply:
 - `k8s/jenkins-helm-cluster-rbac.yaml`
 
+### `No such DSL method withKubeConfig`
+Your Jenkins does not have that plugin step.
+Use `Jenkinsfile2`, which binds kubeconfig through `withCredentials([file(...)])`.
+
 ### Jenkins UI Access
 - Direct NodePort: `http://<NODE_IP>:32000`
 - Ingress (if DNS/hosts configured): `http://jenkins.local`
@@ -182,8 +198,9 @@ Re-apply:
 ## 8) Quick Checklist
 
 1. `dockerhub-creds` exists in Jenkins.
-2. Jenkins SA exists in `jenkins` namespace.
-3. `local-path` StorageClass is default.
-4. Cluster RBAC applied.
-5. Pipeline completed successfully.
-6. `kubectl get svc -n dev` shows `NodePort` `30081`.
+2. `minikube-kubeconfig` exists as `Secret file`.
+3. Jenkins SA exists in `jenkins` namespace.
+4. `local-path` StorageClass is default.
+5. Cluster RBAC applied.
+6. Pipeline (`Jenkinsfile2`) completed successfully.
+7. `kubectl get svc -n dev` shows `NodePort` `30081`.

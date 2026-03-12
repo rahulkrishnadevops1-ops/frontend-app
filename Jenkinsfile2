@@ -1,0 +1,82 @@
+pipeline {
+  agent { label 'built-in' }
+
+  options {
+    disableConcurrentBuilds()
+    skipDefaultCheckout(true)
+    timestamps()
+  }
+
+  parameters {
+    string(name: 'IMAGE_TAG', defaultValue: '', description: 'Docker image tag (leave empty to use BUILD_NUMBER)')
+    string(name: 'RELEASE_NAME', defaultValue: 'nginx-demo', description: 'Helm release name')
+    string(name: 'K8S_NAMESPACE', defaultValue: 'dev', description: 'Kubernetes namespace')
+  }
+
+  environment {
+    KUBECONFIG_CREDENTIALS_ID = 'minikube-kubeconfig'
+    DOCKER_CREDENTIALS_ID = 'dockerhub-creds'
+    IMAGE_REPOSITORY = 'privatergistry/nginx-demo'
+    HELM_CHART_PATH = 'helm/nginx-demo'
+    VALUES_FILE = 'helm/nginx-demo/values.yaml'
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Build & Push Image') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: env.DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKERHUB_USERNAME', passwordVariable: 'DOCKERHUB_PASSWORD')]) {
+          script {
+            env.RESOLVED_IMAGE_TAG = params.IMAGE_TAG?.trim() ? params.IMAGE_TAG.trim() : env.BUILD_NUMBER
+          }
+          sh '''
+            set -eu
+            echo "Using image: ${IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}"
+
+            echo "${DOCKERHUB_PASSWORD}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+            docker build -t "${IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}" .
+            docker push "${IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}"
+            docker logout || true
+          '''
+        }
+      }
+    }
+
+    stage('Deploy To Minikube') {
+      steps {
+        withCredentials([file(credentialsId: env.KUBECONFIG_CREDENTIALS_ID, variable: 'KCFG')]) {
+          sh '''
+            set -eu
+            export KUBECONFIG="$KCFG"
+            echo "Deploying image: ${IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}"
+
+            helm upgrade --install "${RELEASE_NAME}" "${HELM_CHART_PATH}" \
+              --namespace "${K8S_NAMESPACE}" \
+              --create-namespace \
+              --wait \
+              --atomic \
+              --timeout 5m \
+              -f "${VALUES_FILE}" \
+              --set image.repository="${IMAGE_REPOSITORY}" \
+              --set image.tag="${RESOLVED_IMAGE_TAG}" \
+              --set image.pullPolicy="IfNotPresent"
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo 'Deployment to Minikube completed successfully.'
+    }
+    failure {
+      echo 'Deployment failed. Check stage logs for details.'
+    }
+  }
+}
