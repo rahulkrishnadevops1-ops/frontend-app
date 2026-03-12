@@ -1,0 +1,68 @@
+pipeline {
+  agent { label 'built-in' }
+
+  options {
+    timestamps()
+  }
+
+  parameters {
+    string(name: 'KUBECONFIG_CREDENTIALS_ID', defaultValue: 'minikube-kubeconfig', description: 'Jenkins Secret file credentials ID that contains kubeconfig')
+    string(name: 'RELEASE_NAME', defaultValue: 'nginx-demo', description: 'Helm release name')
+    string(name: 'K8S_NAMESPACE', defaultValue: 'dev', description: 'Kubernetes namespace')
+    string(name: 'HELM_CHART_PATH', defaultValue: 'helm/nginx-demo', description: 'Path to Helm chart in repo')
+    string(name: 'VALUES_FILE', defaultValue: 'helm/nginx-demo/values.yaml', description: 'Helm values file path')
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Validate Tools') {
+      steps {
+        sh '''
+          set -e
+          kubectl version --client
+          helm version
+          if command -v minikube >/dev/null 2>&1; then
+            minikube status || true
+          fi
+        '''
+      }
+    }
+
+    stage('Deploy To Minikube') {
+      steps {
+        withKubeConfig([credentialsId: params.KUBECONFIG_CREDENTIALS_ID]) {
+          sh '''
+            set -e
+
+            kubectl cluster-info
+            kubectl get nodes
+
+            kubectl get namespace "${K8S_NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${K8S_NAMESPACE}"
+
+            helm upgrade --install "${RELEASE_NAME}" "${HELM_CHART_PATH}" \
+              --namespace "${K8S_NAMESPACE}" \
+              --create-namespace \
+              -f "${VALUES_FILE}"
+
+            kubectl get pods -n "${K8S_NAMESPACE}" -o wide
+            kubectl get svc -n "${K8S_NAMESPACE}"
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      echo 'Deployment to Minikube completed successfully.'
+    }
+    failure {
+      echo 'Deployment failed. Check stage logs for details.'
+    }
+  }
+}
