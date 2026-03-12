@@ -6,7 +6,7 @@ pipeline {
   }
 
   parameters {
-    string(name: 'KUBECONFIG_CREDENTIALS_ID', defaultValue: 'minikube-kubeconfig', description: 'Jenkins Secret file credentials ID that contains kubeconfig')
+    string(name: 'KUBECONFIG_CREDENTIALS_ID', defaultValue: 'minikube-kubeconfig', description: 'Jenkins Secret file credential ID that contains kubeconfig')
     string(name: 'RELEASE_NAME', defaultValue: 'nginx-demo', description: 'Helm release name')
     string(name: 'K8S_NAMESPACE', defaultValue: 'dev', description: 'Kubernetes namespace')
     string(name: 'HELM_CHART_PATH', defaultValue: 'helm/nginx-demo', description: 'Path to Helm chart in repo')
@@ -35,9 +35,10 @@ pipeline {
 
     stage('Deploy To Minikube') {
       steps {
-        withKubeConfig([credentialsId: params.KUBECONFIG_CREDENTIALS_ID]) {
+        withCredentials([file(credentialsId: params.KUBECONFIG_CREDENTIALS_ID, variable: 'KCFG')]) {
           sh '''
             set -e
+            export KUBECONFIG="$KCFG"
 
             kubectl cluster-info
             kubectl get nodes
