@@ -8,7 +8,8 @@ pipeline {
   }
 
   parameters {
-    string(name: 'KUBECONFIG_CREDENTIALS_ID', defaultValue: 'minikube-kubeconfig', description: 'Jenkins Secret file credential ID that contains kubeconfig')
+    string(name: 'INFRA_JOB_NAME', defaultValue: 'Infra-Pipeline', description: 'Infra pipeline job that publishes kubeconfig artifact')
+    string(name: 'SSH_CREDENTIALS_ID', defaultValue: 'ssh-private-key', description: 'Jenkins Secret file credential ID for EC2 SSH private key')
     string(name: 'DOCKER_CREDENTIALS_ID', defaultValue: 'dockerhub-creds', description: 'Jenkins username/password credentials ID for Docker Hub')
     string(name: 'IMAGE_REPOSITORY', defaultValue: 'privatergistry/nginx-demo', description: 'Docker image repository')
     string(name: 'IMAGE_TAG', defaultValue: '', description: 'Docker image tag (leave empty to use BUILD_NUMBER)')
@@ -16,6 +17,11 @@ pipeline {
     string(name: 'K8S_NAMESPACE', defaultValue: 'dev', description: 'Kubernetes namespace')
     string(name: 'HELM_CHART_PATH', defaultValue: 'helm/nginx-demo', description: 'Path to Helm chart in repo')
     string(name: 'VALUES_FILE', defaultValue: 'helm/nginx-demo/values.yaml', description: 'Helm values file path')
+  }
+
+  environment {
+    TUNNEL_PID_FILE = '.minikube_tunnel_pid'
+    TUNNEL_LOG_FILE = '.minikube_tunnel.log'
   }
 
   stages {
@@ -28,13 +34,12 @@ pipeline {
     stage('Validate Tools') {
       steps {
         sh '''
-          set -e
+          set -eu
           kubectl version --client
           helm version
           docker --version
-          if command -v minikube >/dev/null 2>&1; then
-            minikube status || true
-          fi
+          ssh -V || true
+          curl --version | head -n 1
         '''
       }
     }
@@ -47,9 +52,8 @@ pipeline {
             env.RESOLVED_IMAGE_REPOSITORY = params.IMAGE_REPOSITORY?.trim() ? params.IMAGE_REPOSITORY.trim() : "${env.DOCKERHUB_USERNAME}/nginx-demo"
           }
           sh '''
-            set -e
+            set -eu
             echo "Using image: ${RESOLVED_IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}"
-
             echo "${DOCKERHUB_PASSWORD}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
             docker build -t "${RESOLVED_IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}" .
             docker push "${RESOLVED_IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}"
@@ -59,38 +63,136 @@ pipeline {
       }
     }
 
-    stage('Deploy To Minikube') {
+    stage('Fetch Tunnel Kubeconfig') {
       steps {
-        withCredentials([file(credentialsId: params.KUBECONFIG_CREDENTIALS_ID, variable: 'KCFG')]) {
+        sh 'rm -f kubeconfig-tunnel-*.yaml || true'
+        copyArtifacts(
+          projectName: params.INFRA_JOB_NAME,
+          selector: lastSuccessful(),
+          filter: 'ansible/artifacts/kubeconfig-tunnel-*.yaml',
+          flatten: true,
+          optional: false
+        )
+        script {
+          env.KUBECONFIG_FILE = sh(
+            script: "ls -1t kubeconfig-tunnel-*.yaml | head -n1",
+            returnStdout: true
+          ).trim()
+
+          if (!env.KUBECONFIG_FILE) {
+            error('Tunnel kubeconfig artifact not found')
+          }
+
+          def m = (env.KUBECONFIG_FILE =~ /kubeconfig-tunnel-(.+)\\.yaml/)
+          if (!m) {
+            error("Unable to extract EC2 public IP from filename: ${env.KUBECONFIG_FILE}")
+          }
+
+          env.EC2_PUBLIC_IP = m[0][1]
+          echo "Using kubeconfig artifact: ${env.KUBECONFIG_FILE}"
+          echo "Resolved EC2 public IP: ${env.EC2_PUBLIC_IP}"
+        }
+      }
+    }
+
+    stage('Setup API Tunnel') {
+      steps {
+        withCredentials([file(credentialsId: params.SSH_CREDENTIALS_ID, variable: 'SSH_KEY_FILE')]) {
           sh '''
-            set -e
-            export KUBECONFIG="$KCFG"
-            echo "Deploying image: ${RESOLVED_IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}"
+            set -eu
 
-            kubectl cluster-info
-            kubectl get nodes
+            if [ -z "${EC2_PUBLIC_IP}" ]; then
+              echo "EC2_PUBLIC_IP is empty"
+              exit 1
+            fi
 
-            helm upgrade --install "${RELEASE_NAME}" "${HELM_CHART_PATH}" \
-              --namespace "${K8S_NAMESPACE}" \
-              --create-namespace \
-              --wait \
-              --atomic \
-              --timeout 5m \
-              -f "${VALUES_FILE}" \
-              --set image.repository="${RESOLVED_IMAGE_REPOSITORY}" \
-              --set image.tag="${RESOLVED_IMAGE_TAG}" \
-              --set image.pullPolicy="IfNotPresent"
+            MINIKUBE_IP="$(ssh -i "${SSH_KEY_FILE}" \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              ec2-user@"${EC2_PUBLIC_IP}" "minikube ip")"
 
-            kubectl rollout status deployment/"${RELEASE_NAME}" -n "${K8S_NAMESPACE}" --timeout=180s
-            kubectl get pods -n "${K8S_NAMESPACE}" -o wide
-            kubectl get svc -n "${K8S_NAMESPACE}"
+            if [ -z "${MINIKUBE_IP}" ]; then
+              echo "Failed to read minikube ip from remote host"
+              exit 1
+            fi
+
+            if [ -f "${TUNNEL_PID_FILE}" ]; then
+              OLD_PID="$(cat "${TUNNEL_PID_FILE}" || true)"
+              if [ -n "${OLD_PID}" ] && kill -0 "${OLD_PID}" 2>/dev/null; then
+                kill "${OLD_PID}" || true
+                sleep 1
+              fi
+              rm -f "${TUNNEL_PID_FILE}"
+            fi
+
+            nohup ssh -i "${SSH_KEY_FILE}" \
+              -o ExitOnForwardFailure=yes \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=3 \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -N -L 8443:${MINIKUBE_IP}:8443 ec2-user@"${EC2_PUBLIC_IP}" \
+              > "${TUNNEL_LOG_FILE}" 2>&1 &
+
+            TUNNEL_PID="$!"
+            echo "${TUNNEL_PID}" > "${TUNNEL_PID_FILE}"
+            sleep 3
+
+            if ! kill -0 "${TUNNEL_PID}" 2>/dev/null; then
+              echo "Tunnel died; log:"
+              cat "${TUNNEL_LOG_FILE}" || true
+              exit 1
+            fi
+
+            curl -sk --max-time 10 https://127.0.0.1:8443/version >/dev/null
+            echo "Tunnel ready: 127.0.0.1:8443 -> ${MINIKUBE_IP}:8443 via ${EC2_PUBLIC_IP}"
           '''
         }
+      }
+    }
+
+    stage('Deploy To Minikube') {
+      steps {
+        sh '''
+          set -eu
+          export KUBECONFIG="${KUBECONFIG_FILE}"
+
+          echo "Deploying image: ${RESOLVED_IMAGE_REPOSITORY}:${RESOLVED_IMAGE_TAG}"
+          kubectl cluster-info
+          kubectl get nodes
+
+          helm upgrade --install "${RELEASE_NAME}" "${HELM_CHART_PATH}" \
+            --namespace "${K8S_NAMESPACE}" \
+            --create-namespace \
+            --wait \
+            --atomic \
+            --timeout 5m \
+            -f "${VALUES_FILE}" \
+            --set image.repository="${RESOLVED_IMAGE_REPOSITORY}" \
+            --set image.tag="${RESOLVED_IMAGE_TAG}" \
+            --set image.pullPolicy="IfNotPresent"
+
+          kubectl rollout status deployment/"${RELEASE_NAME}" -n "${K8S_NAMESPACE}" --timeout=180s
+          kubectl get pods -n "${K8S_NAMESPACE}" -o wide
+          kubectl get svc -n "${K8S_NAMESPACE}"
+        '''
       }
     }
   }
 
   post {
+    always {
+      sh '''
+        set +e
+        if [ -f "${TUNNEL_PID_FILE}" ]; then
+          PID="$(cat "${TUNNEL_PID_FILE}" || true)"
+          if [ -n "${PID}" ] && kill -0 "${PID}" 2>/dev/null; then
+            kill "${PID}" || true
+          fi
+        fi
+      '''
+      archiveArtifacts artifacts: 'kubeconfig-tunnel-*.yaml,.minikube_tunnel*', allowEmptyArchive: true
+    }
     success {
       echo 'Deployment to Minikube completed successfully.'
     }
